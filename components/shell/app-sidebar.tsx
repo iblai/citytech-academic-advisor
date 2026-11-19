@@ -1,0 +1,289 @@
+"use client";
+
+import { useCallback, useMemo, useState } from "react";
+import Image from "next/image";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { useDispatch, useSelector } from "react-redux";
+import {
+  BookOpen,
+  BriefcaseBusiness,
+  ClipboardCheck,
+  Lightbulb,
+  Route,
+  Settings,
+  Sparkles,
+  type LucideIcon,
+} from "lucide-react";
+import { LOGO_ENDPOINTS } from "@iblai/iblai-js/data-layer";
+import { InviteUserDialog } from "@iblai/iblai-js/web-containers";
+import {
+  PLATFORM_SIDEBAR_NAV_MUTED,
+  PlatformAccountSheet,
+  PlatformSidebar,
+  PlatformSidebarCollapsedLabelFlyout,
+  type PlatformAccountTab,
+  type PlatformSidebarFooterActionId,
+  type PlatformSidebarSectionConfig,
+  type PlatformSidebarSectionContext,
+} from "@iblai/iblai-js/web-containers/next";
+import { selectRbacPermissions, setOpenPricingModal, type Tenant } from "@iblai/iblai-js/web-utils";
+import { useAdminMode } from "@/components/shell/admin-mode";
+import { useSampleMode } from "@/hooks/use-sample-mode";
+import { useSession } from "@/hooks/use-session";
+import config from "@/lib/iblai/config";
+import { isTrialUser } from "@/lib/iblai/house-journeys";
+import { tenantDisplayName } from "@/lib/iblai/tenant";
+import type { IblaiRootState } from "@/store/iblai-store";
+import { cn } from "@/lib/utils";
+
+type NavItem = {
+  label: string;
+  path: string;
+  icon: LucideIcon;
+  exact?: boolean;
+  adminOnly?: boolean;
+};
+
+const WORKSPACE: NavItem[] = [
+  { label: "Advisor", path: "", icon: Sparkles, exact: true },
+  { label: "My pathway", path: "/pathway", icon: Route },
+  { label: "Catalog", path: "/catalog", icon: BookOpen },
+  { label: "Careers & skills", path: "/careers", icon: BriefcaseBusiness },
+  { label: "Review queue", path: "/review", icon: ClipboardCheck, adminOnly: true },
+  { label: "Opportunities", path: "/opportunities", icon: Lightbulb, adminOnly: true },
+  { label: "Settings", path: "/settings", icon: Settings, adminOnly: true },
+];
+
+/**
+ * The sidebar is the SDK's cross-SPA `PlatformSidebar` — the same shell as
+ * os.ibl.ai: the organization's logo in the header, a primary action, the
+ * app's own navigation in the middle, and the invariant footer cluster
+ * (Notifications, Invites, Management, Integrations, Monetization,
+ * Advanced, Support) with the platform's admin / RBAC visibility rules.
+ * Footer actions open the SDK's organization sheets in place, exactly like
+ * the OS.
+ */
+export function AppSidebar() {
+  const pathname = usePathname() ?? "/";
+  const router = useRouter();
+  const { href, tenantKey, username, email, isAdmin, currentTenant, tenants } = useSession();
+  const { adminMode } = useAdminMode();
+  const dispatch = useDispatch();
+  // On the community organization the admin cluster is shown and every click upgrades.
+  const trial = isTrialUser(tenantKey, tenants);
+  const sample = useSampleMode();
+  const rbacPermissions = useSelector((s: IblaiRootState) => selectRbacPermissions(s));
+  const [sheet, setSheet] = useState<PlatformAccountTab | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
+
+  const onFooterAction = useCallback(
+    (id: PlatformSidebarFooterActionId) => {
+      if (trial) dispatch(setOpenPricingModal(true));
+      else if (id === "notifications") router.push(href("/notifications"));
+      else if (id === "invites") setInviteOpen(true);
+      else setSheet(id);
+    },
+    [trial, dispatch, router, href],
+  );
+
+  const sections = useMemo<PlatformSidebarSectionConfig[]>(
+    () => [
+      {
+        type: "custom",
+        id: "advisor-nav",
+        render: (ctx) => (
+          <RecruitNav
+            ctx={ctx}
+            pathname={pathname}
+            href={href}
+            adminMode={adminMode}
+          />
+        ),
+      },
+    ],
+    [pathname, href, adminMode],
+  );
+
+  return (
+    <>
+      <PlatformSidebar
+        logo={
+          <TenantLogo
+            tenantKey={tenantKey}
+            name={tenantDisplayName(currentTenant)}
+            homeHref={href()}
+          />
+        }
+        primaryAction={{
+          label: "New conversation",
+          icon: Sparkles,
+          // The sample has no advisor of its own: a new conversation upgrades.
+          onClick: () =>
+            sample
+              ? dispatch(setOpenPricingModal(true))
+              : router.push(`${href()}?new=${Date.now().toString(36)}`),
+        }}
+        sections={sections}
+        footer={{
+          isAdmin,
+          isLiveAdmin: isAdmin && adminMode,
+          showTrialGatedAdminMenu: trial,
+          enableRbac: config.enableRBAC(),
+          rbacPermissions: rbacPermissions ?? {},
+          tenantKey,
+          currentTenant: (currentTenant as unknown as Tenant | undefined) ?? null,
+          notificationsAllowed: true,
+          invitesUserTypeAllowed: true,
+          supportUrl: config.helpCenterUrl(),
+          onAction: onFooterAction,
+        }}
+      />
+      <PlatformAccountSheet
+        tab={sheet}
+        onClose={() => setSheet(null)}
+        tenantKey={tenantKey}
+        username={username}
+        email={email}
+        onInviteClick={() => setInviteOpen(true)}
+        mainPlatformKey={config.mainTenantKey()}
+        authUrl={config.authUrl()}
+        currentSpa="advisor"
+        platformBaseDomain={config.platformBaseDomain()}
+        onboardingBasePath={`${window.location.origin}${href()}`}
+        rbacPermissions={rbacPermissions ?? {}}
+      />
+      <InviteUserDialog
+        isOpen={inviteOpen}
+        onClose={() => setInviteOpen(false)}
+        tenant={tenantKey}
+      />
+    </>
+  );
+}
+
+/**
+ * The organization's own logo, served by the platform for every tenant
+ * (`/api/core/orgs/<org>/logo`, the same source os.ibl.ai uses). Falls back
+ * to the organization's name while it loads or when none was uploaded.
+ */
+function TenantLogo({
+  tenantKey,
+  name,
+  homeHref,
+}: {
+  tenantKey: string;
+  name: string;
+  homeHref: string;
+}) {
+  const [failed, setFailed] = useState(false);
+  const src = tenantKey ? LOGO_ENDPOINTS.light_logo(tenantKey) : "";
+  return (
+    <Link
+      href={homeHref}
+      className="flex min-w-0 items-center justify-center"
+      aria-label={`${name || "Home"} — home`}
+    >
+      {src && !failed ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={src}
+          alt={name || tenantKey}
+          className="h-8 w-auto max-w-[9.5rem] object-contain"
+          onError={() => setFailed(true)}
+        />
+      ) : (
+        <span className="flex items-center gap-1.5">
+          <Image
+            src="/images/iblai-logo.png"
+            alt=""
+            width={60}
+            height={20}
+            className="h-4 w-auto"
+          />
+          <span className="truncate text-[13px] font-semibold text-gray-900">
+            {name || "ibl.ai"}
+          </span>
+        </span>
+      )}
+    </Link>
+  );
+}
+
+/** The app's navigation, rendered inside the SDK shell with its palette. */
+function RecruitNav({
+  ctx,
+  pathname,
+  href,
+  adminMode,
+}: {
+  ctx: PlatformSidebarSectionContext;
+  pathname: string;
+  href: (path?: string) => string;
+  adminMode: boolean;
+}) {
+  const isActive = (item: NavItem) => {
+    const target = href(item.path);
+    if (item.exact) return pathname === target || pathname === `${target}/`;
+    return pathname === target || pathname.startsWith(`${target}/`);
+  };
+  const items = WORKSPACE.filter((i) => !i.adminOnly || adminMode);
+
+  if (ctx.collapsed) {
+    return (
+      <>
+        {items.map((item) => {
+          const active = isActive(item);
+          return (
+            <PlatformSidebarCollapsedLabelFlyout key={item.path} label={item.label}>
+              <Link
+                href={href(item.path)}
+                onClick={ctx.onAfterNav}
+                aria-current={active ? "page" : undefined}
+                aria-label={item.label}
+                className={cn(
+                  "inline-flex size-10 items-center justify-center rounded-lg transition-colors hover:bg-[#f0f0f0]",
+                  active ? "bg-[#cfe8fa]/40 text-[#0058cc]" : "text-[#5f5f61]",
+                )}
+              >
+                <item.icon className="size-4" strokeWidth={1.5} />
+              </Link>
+            </PlatformSidebarCollapsedLabelFlyout>
+          );
+        })}
+      </>
+    );
+  }
+
+  return (
+    <div className="space-y-0.5">
+      <ul className="flex flex-col gap-0.5 pt-1">
+        {items.map((item) => {
+          const active = isActive(item);
+          return (
+            <li key={item.path}>
+              <Link
+                href={href(item.path)}
+                onClick={ctx.onAfterNav}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "flex h-9 w-full min-w-0 items-center gap-2 rounded-md px-2 text-[14px] font-normal transition-colors",
+                  active
+                    ? "bg-[#cfe8fa]/40 font-medium text-[#0058cc] hover:bg-[#cfe8fa]/50"
+                    : "text-[#5f5f61] hover:bg-[#f4f4f4]",
+                )}
+              >
+                <item.icon
+                  className="size-4 shrink-0"
+                  strokeWidth={1.5}
+                  style={{ color: active ? "#0058cc" : PLATFORM_SIDEBAR_NAV_MUTED }}
+                />
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}

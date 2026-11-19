@@ -1,0 +1,182 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useDispatch } from "react-redux";
+import { useTranslations } from "next-intl";
+import { AlertTriangle, CheckCircle2, Sparkles, Wand2 } from "lucide-react";
+import { toast } from "sonner";
+import { setOpenPricingModal } from "@iblai/iblai-js/web-utils";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Spinner } from "@/components/ui/spinner";
+import { useSampleMode } from "@/hooks/use-sample-mode";
+import { useSession } from "@/hooks/use-session";
+import { adminFetch } from "@/lib/advisor/admin-client";
+import { useAdvisorSettings } from "@/lib/advisor/use-advisor-settings";
+import { VOCAB } from "@/lib/advisor/vocabulary";
+
+type Status = {
+  agentId: string;
+  pinnedByEnv: boolean;
+  mcpServerId: number | null;
+  setupCompletedAt: string | null;
+  appUrl: string;
+  username: string;
+};
+
+/**
+ * Shown where the advisor would be when the organization has no agent
+ * yet. Admins run the one-click setup from here (the server creates the
+ * agent, registers this app's tool server and saves the id); members are
+ * told to ask an admin; on the sample it offers a platform of one's own.
+ */
+export function AdvisorSetupCard({ compact = false }: { compact?: boolean }) {
+  const { isAdmin, tenantKey, href } = useSession();
+  const sample = useSampleMode();
+  const t = useTranslations("houseJourneys.sample");
+  const dispatch = useDispatch();
+  const { branding, refetch } = useAdvisorSettings();
+  const [status, setStatus] = useState<Status | null>(null);
+  const [statusError, setStatusError] = useState("");
+  const [institution, setInstitution] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [log, setLog] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!isAdmin || !tenantKey || sample) return;
+    adminFetch<Status>(`/api/admin/agent?org=${encodeURIComponent(tenantKey)}`)
+      .then((s) => {
+        setStatus(s);
+        setInstitution((v) => v || (branding.name !== tenantKey ? branding.name : ""));
+      })
+      .catch((e: Error) => setStatusError(e.message));
+  }, [isAdmin, tenantKey, sample, branding.name]);
+
+  const run = async () => {
+    setBusy(true);
+    setLog([]);
+    try {
+      const result = await adminFetch<{ agentId: string; log: string[] }>("/api/admin/agent", {
+        method: "POST",
+        json: { org: tenantKey, institutionName: institution.trim() || undefined },
+      });
+      setLog(result.log ?? []);
+      toast.success(`${VOCAB.advisor} is ready`);
+      await refetch();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Setup failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Setup runs as the signed-in admin; the platform refuses anyone else.
+  const ready = !!status;
+
+  return (
+    <div className={compact ? "p-4" : "mx-auto w-full max-w-2xl p-4 md:p-8"}>
+      <section className="overflow-hidden rounded-2xl border border-[var(--border-color,#e5e7eb)] bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
+        <div className="bg-gradient-to-br from-[#eef6fc] to-white px-6 py-7">
+          <span className="flex size-11 items-center justify-center rounded-2xl bg-white text-[#0058cc] shadow-sm">
+            <Sparkles className="size-5" />
+          </span>
+          <h2 className="mt-4 text-xl font-semibold tracking-tight text-gray-900">
+            Meet your {VOCAB.advisor}
+          </h2>
+          <p className="text-muted-foreground mt-1.5 max-w-lg text-sm">
+            One agent students and advisors both talk to. It knows the loaded catalog and the job
+            market, proposes term-by-term pathways, and leaves the decision to a human advisor.
+            Setup creates it in this organization with its prompt, skills, suggested prompts and
+            knowledge documents.
+          </p>
+        </div>
+
+        {sample ? (
+          <div className="px-6 py-5">
+            <Button
+              className="ibl-button-primary"
+              onClick={() => dispatch(setOpenPricingModal(true))}
+            >
+              {t("create")}
+            </Button>
+          </div>
+        ) : !isAdmin ? (
+          <p className="text-muted-foreground px-6 py-5 text-sm">
+            An organization admin has not set up the {VOCAB.advisor} yet. Ask them to open{" "}
+            <span className="font-medium text-gray-900">Settings → {VOCAB.advisor}</span>.
+          </p>
+        ) : (
+          <div className="grid gap-4 px-6 py-5">
+            {statusError ? (
+              <p className="flex items-start gap-2 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {statusError}
+              </p>
+            ) : null}
+            {status ? (
+              <ul className="grid gap-1.5 text-sm">
+                <Check
+                  ok={status.appUrl.startsWith("https://") || status.appUrl.includes("localhost")}
+                >
+                  Public URL the platform will call back on:{" "}
+                  <code className="font-mono text-xs">{status.appUrl}/api/mcp/…</code>
+                  {status.appUrl.includes("localhost") ? (
+                    <span className="text-muted-foreground">
+                      {" "}
+                      — the agent answers from its knowledge documents here; set NEXT_PUBLIC_APP_URL
+                      to a public https origin to give it the live tools as well.
+                    </span>
+                  ) : null}
+                </Check>
+              </ul>
+            ) : null}
+            <div className="grid gap-1.5">
+              <Label htmlFor="institution">Institution name (how the agent refers to you)</Label>
+              <Input
+                id="institution"
+                value={institution}
+                onChange={(e) => setInstitution(e.target.value)}
+                placeholder="New York City College of Technology"
+                className="h-9"
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                className="ibl-button-primary"
+                disabled={busy || !ready}
+                onClick={() => void run()}
+              >
+                {busy ? <Spinner data-icon="inline-start" /> : <Wand2 data-icon="inline-start" />}
+                Set up the {VOCAB.advisor}
+              </Button>
+              <Button variant="outline" render={<Link href={href("/settings?tab=agent")} />}>
+                Settings
+              </Button>
+            </div>
+            {log.length ? (
+              <ol className="text-muted-foreground rounded-lg bg-gray-50 px-3 py-2 text-xs leading-5">
+                {log.map((l, i) => (
+                  <li key={i}>{l}</li>
+                ))}
+              </ol>
+            ) : null}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function Check({ ok, children }: { ok: boolean; children: React.ReactNode }) {
+  return (
+    <li className="flex items-start gap-2">
+      {ok ? (
+        <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
+      ) : (
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
+      )}
+      <span className={ok ? "text-gray-700" : "text-gray-900"}>{children}</span>
+    </li>
+  );
+}
